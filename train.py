@@ -24,6 +24,7 @@ from dataset import MultilingualDataset, custom_collate
 from utils import get_sacrebleu, label_smoothed_nll_loss
 from model import get_model, get_tokenizer
 
+from torch.distributed import init_process_group, destroy_process_group, barrier , all_reduce
 
 
 class Trainer:

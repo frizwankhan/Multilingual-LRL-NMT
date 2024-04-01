@@ -50,7 +50,7 @@ def get_default_config():
     
     # languages = ["bn", "gu", "hi", "kn", "ml", "mr", "or", "pa", "ta", "te"]
     languages = ['si', 'ne']
-    dataset_path = "dataset"
+    dataset_path = "Dataset_Unseen"
     
     if setting == "M2O":
         train_src_languages = languages
@@ -80,6 +80,7 @@ def get_default_config():
         train_tgt_files = train_tgt_files,
         dev_src_files = dev_src_files,
         dev_tgt_files = dev_tgt_files,
+        
         encoder_layers = 6,
         decoder_layers = 6,
         encoder_attention_heads = 16,
