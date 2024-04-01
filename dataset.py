@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
+import random
 
 # This
 class MultilingualDataset(Dataset):
@@ -34,11 +35,11 @@ class MultilingualDataset(Dataset):
             
         elif dataset_type=="dev":
             file_details = files
-            slangtlang =lang_pair.strip().split("-")
-            slang=slangtlang[0]
-            tlang=slangtlang[1]
             self.data_src = open(file_details[0], "r").readlines()
             self.data_tgt = open(file_details[1], "r").readlines()
+            corpus = list(zip(self.data_src, self.data_tgt))
+            random.shuffle(corpus)
+            self.data_src, self.data_tgt = zip(*corpus)
             self.data_lang = lang_pair
             self.total_sent = len(self.data_src)
         
@@ -71,7 +72,8 @@ class MultilingualDataset(Dataset):
             for src_line, tgt_line in corpus:
                 yield src_line, tgt_line
             epoch_counter += 1
-            print(f"Epoch {epoch_counter} completed for {lang} corpus")
+            if self.config.local_rank==0:
+                print(f"Epoch {epoch_counter} completed for {lang} corpus")
     
     def __len__(self):
         return self.total_sent
@@ -95,6 +97,7 @@ def custom_collate(batch, config, tok):
     decoder_label_batch = []
     tgt_sentences = []
     
+    # TODO: a change this for O2M setting
     for src_sent, tgt_sent, language in batch:
         tgt_sentences.append(tgt_sent)
         src_sent_split = src_sent.split(" ")

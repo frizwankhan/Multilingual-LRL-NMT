@@ -41,7 +41,7 @@ class Config:
     model_path: str = "model.ft"
     dev_batch_size: int = 128
     num_epochs: int = 30
-    finetuned_model_path: str = "model.ft"
+    finetuned_model_path: str = None
     
     
     
@@ -89,11 +89,12 @@ def get_default_config():
         pretrained_model="indicbart_model.ckpt",
         tokenizer_name_or_path="albert-indicunified64k",
         wb_project="indic-bart",
-        wb_run="Run-1",
+        wb_run="test-run",
         warmup_steps=16000,
         dropout=0.1,
         batch_size=16,
         model_path="model.ft",
-        eval_every=1000
+        eval_every=1000,
+        finetuned_model_path=None
     )
     return config

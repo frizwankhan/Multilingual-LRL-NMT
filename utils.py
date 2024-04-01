@@ -2,7 +2,7 @@ import sacrebleu
 
 
 def get_sacrebleu(refs, hyp):
-    bleu = sacrebleu.corpus_bleu(hyp, refs)
+    bleu = sacrebleu.corpus_bleu(hyp, [refs])
     return bleu.score
 
 

@@ -15,7 +15,6 @@ import wandb
 
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
-from torch.distributed import init_process_group, destroy_process_group, barrier, all_reduce
 
 from transformers import AdamW
 from transformers import get_linear_schedule_with_warmup
@@ -116,8 +115,8 @@ class Trainer:
                 shuffle=False,
                 collate_fn=lambda b: custom_collate(b, config, self.tok)
             )
-            predictions = [[dev_pair, []] for dev_pair, dev_pair_info in self.dev_files]
-            target_sentences = [[dev_pair, []] for dev_pair, dev_pair_info in self.dev_files]
+            predictions = [[] for dev_pair, dev_pair_info in self.dev_files]
+            target_sentences = [[] for dev_pair, dev_pair_info in self.dev_files]
             for dev_input_ids, dev_input_masks, _, __, tgt_sentences in val_dataloader:
                 dev_input_ids = dev_input_ids.to(self.device) 
                 dev_input_masks = dev_input_masks.to(self.device) 
@@ -139,18 +138,21 @@ class Trainer:
                 del dev_input_ids 
                 del dev_input_masks 
                 translations = translations.to('cpu')
+                
                 for translation in translations:
-                    translation  = self.tok.decode(translation, clean_up_tokenization_spaces=False) ### Get the raw sentences.
-                    predictions[dev_idx][1].append(translation)
-                    
-                target_sentences[dev_idx][1].extend(tgt_sentences)
-                del translations
+                    translation  = self.tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
+                    predictions[dev_idx].append(translation)
+                target_sentences[dev_idx].extend(tgt_sentences)
             
-            sbleu = get_sacrebleu(target_sentences[dev_idx][1], predictions[dev_idx][1])
+            # for i in range(20):
+            #     print("translation", predictions[dev_idx][i], "---- target", target_sentences[dev_idx][i])
+            # print(len(target_sentences[dev_idx])==len(predictions[dev_idx]))
+            del translations
+            
+            sbleu = get_sacrebleu(target_sentences[dev_idx], predictions[dev_idx])
             individual_sbleu_history[dev_idx][1] = sbleu
-            # print("BLEU", "score using", "SacreBLEU", "after", ctr, "iterations is", round(sbleu, 2), "for language pair", dev_pair)
             sbleus.append(sbleu)
-            print("Evaluation on", dev_pair, "done.")
+            print("Evaluation on", dev_pair, "done.", sbleu)
             
         sbleus = sum(sbleus)/len(sbleus)
         
@@ -161,7 +163,7 @@ class Trainer:
         wandb_run_id = None
         step = 0
         epoch = 0
-        if os.path.exists(config.finetuned_model_path+".checkpoint_dict"):
+        if config.finetuned_model_path is not None and os.path.exists(config.finetuned_model_path+".checkpoint_dict"):
             map_location = {'cuda:%d' % 0: 'cuda:%d' % config.local_rank}
             CHECKPOINT_PATH = config.model_path
             checkpoint_dict = torch.load(CHECKPOINT_PATH+".checkpoint_dict", map_location=map_location)
@@ -172,22 +174,22 @@ class Trainer:
             self.scheduler.load_state_dict(checkpoint_dict['scheduler']) 
             print("Reloading step. This means we resume training.")
             step = checkpoint_dict['step'] + 1
-            # wandb_run_id = checkpoint_dict['wandb_run_id']
+            wandb_run_id = checkpoint_dict['wandb_run_id']
             epoch = checkpoint_dict['epoch'] 
         
-        # if config.local_rank == 0:
-        #     if wandb_run_id is not None:
-        #         wandb.init(
-        #             project=config.wb_project,
-        #             id=wandb_run_id,
-        #             # config=config.__dict__
-        #         )
-        #     else:
-        #         wandb.init(
-        #             project=config.wb_project,
-        #             name = config.wb_run,
-        #             # config=config.__dict__
-        #         )
+        if config.local_rank == 0:
+            if wandb_run_id is not None:
+                wandb.init(
+                    project=config.wb_project,
+                    id=wandb_run_id,
+                    config=config.__dict__
+                )
+            else:
+                wandb.init(
+                    project=config.wb_project,
+                    name = config.wb_run,
+                    config=config.__dict__
+                )
         
         barrier()
         
@@ -203,6 +205,8 @@ class Trainer:
         
         self.model.train()
         for epoch in range(epoch, config.num_epochs):
+            if config.local_rank==0:
+                print("Starting EPOCH", epoch)
             self.train_dataset.reload_data()
             train_dataloader = DataLoader(
                 self.train_dataset, 
@@ -221,10 +225,11 @@ class Trainer:
                         'scheduler': self.scheduler.state_dict(), 
                         'step': step,
                         'epoch': epoch,
-                        # "wandb_run_id": wandb.run.id
+                        "wandb_run_id": wandb.run.id
                         }
                     
                     sbleus, individual_sbleu_history = self.run_evaluation(config)
+                    save_model = False
                     
                     for lang_idx, (lang_pair, sbleu) in enumerate(individual_sbleu_history):
                         print("BLEU score using ScareBLEU after", step, "iterations is", round(sbleu, 2), "for language pair", lang_pair)
@@ -233,13 +238,16 @@ class Trainer:
                             max_individual_sbleu[lang_idx][1] = sbleu
                             max_individual_sbleu_step[lang_idx][1] = step
                             print("New peak reached for", lang_pair,". Saving.")
-                            torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+lang_pair+"."+str(step))
-                            torch.save(self.model.module.state_dict(), CHECKPOINT_PATH) 
-                            torch.save(checkpoint_dict, CHECKPOINT_PATH+".checkpoint_dict")
-                            break
+                            save_model=True
+                    wandb.log({f"{lang_pair}_sbleu": sbleu for lang_pair, sbleu in individual_sbleu_history} )
+                        # wandb.log({f"{lang_pair}_sbleu": sbleu}, step=step)
                         
-                    #     wandb.log({f"{lang_pair}_sbleu": sbleu}, step=step)
-                    # wandb.log({"sbleu": sbleus}, step=step)
+                    if save_model:
+                        # torch.save(checkpoint_dict, CHECKPOINT_PATH+".best_dev_bleu."+lang_pair+"."+str(step))
+                        torch.save(self.model.module.state_dict(), CHECKPOINT_PATH) 
+                        torch.save(checkpoint_dict, CHECKPOINT_PATH+".checkpoint_dict")
+                    print(f"Overall BLEU score: {sbleus}")
+                    wandb.log({"sbleu": sbleus}, step=step)
                     
                     if sbleu > max_global_sbleu: 
                         max_global_sbleu = sbleu
@@ -288,9 +296,9 @@ class Trainer:
                 self.scheduler.step()
                 
 
-                # if config.local_rank==0:
-                #     wandb.log({"loss": loss.detach().cpu().numpy()}, step=step)
-                #     wandb.log({"learning rate", self.scheduler.get_lr()[0]}, step=step)
+                if config.local_rank==0:
+                    wandb.log({"loss": loss.detach().cpu().numpy()}, step=step)
+                    wandb.log({"learning rate": self.scheduler.get_lr()[0]}, step=step)
                     
                 if step%100==0:
                     end = time.time()
@@ -324,7 +332,7 @@ class Trainer:
             'scheduler': self.scheduler.state_dict(), 
             'step': step,
             'epoch': epoch,
-            # "wandb_run_id": wandb.run.id
+            "wandb_run_id": wandb.run.id
             }
         torch.save(self.model.module.state_dict(), CHECKPOINT_PATH+".final") 
         torch.save(checkpoint_dict, CHECKPOINT_PATH+".checkpoint_dict.final")
@@ -351,8 +359,8 @@ if __name__=="__main__":
         print("Training Files are: ", train_files)
         print("Dev Files are: ", dev_files)
         
-    # if config.local_rank == 0:
-    #     wandb.login()    
+    if config.local_rank == 0:
+        wandb.login()    
     
     trainer = Trainer(config, train_files, dev_files)
     trainer.train(config)
