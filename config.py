@@ -48,7 +48,8 @@ class Config:
 def get_default_config():
     setting = "M2O"
     
-    languages = ["bn", "gu", "hi", "kn", "ml", "mr", "or", "pa", "ta", "te"]
+    # languages = ["bn", "gu", "hi", "kn", "ml", "mr", "or", "pa", "ta", "te"]
+    languages = ['si', 'ne']
     dataset_path = "dataset"
     
     if setting == "M2O":
