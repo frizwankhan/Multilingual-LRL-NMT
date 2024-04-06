@@ -42,6 +42,9 @@ class Config:
     dev_batch_size: int = 128
     num_epochs: int = 30
     finetuned_model_path: str = None
+    adapter_type = "lora"
+    unfreeze_params = {"encoder":[0,1,2,3,4,5], "decoder":[0,1,2,3,4,5]}
+    unfreeze_embeddings = True
     
     
     
@@ -90,8 +93,8 @@ def get_default_config():
         d_model = 1024,
         pretrained_model="indicbart_model.ckpt",
         tokenizer_name_or_path="albert-indicunified64k",
-        wb_project="indic-bart",
-        wb_run="test-run",
+        wb_project="indic-bart-adapter",
+        wb_run="Sn-Ne-Case-1",
         warmup_steps=16000,
         dropout=0.1,
         batch_size=16,

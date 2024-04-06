@@ -1,5 +1,6 @@
 '''
 torchrun --nproc_per_node=2 --nnodes=1 --master_port 29600 train.py
+python3 -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --master_port 29600 train.py
 '''
 
 from config import get_default_config
@@ -18,6 +19,8 @@ from torch.nn.parallel import DistributedDataParallel
 
 from transformers import AdamW
 from transformers import get_linear_schedule_with_warmup
+import adapters
+from adapters import list_adapters, BnConfig, LoRAConfig
 
 from dataset import MultilingualDataset, custom_collate
 
@@ -36,7 +39,17 @@ class Trainer:
         
         torch.cuda.set_device(config.local_rank)
         
+        self.total_params = None
+        self.total_trainable_params = None
         self.get_model(config)
+        
+        if config.local_rank == 0:
+            wandb.init(
+                project=config.wb_project,
+                name=config.wb_run,
+                config={**config.__dict__, "Total Model Params": self.total_params, "Total Trainable Params": self.total_trainable_params}
+            )
+        
         self.get_optimizer_and_scheduler(config)
         
         torch.cuda.empty_cache()
@@ -49,17 +62,54 @@ class Trainer:
     def get_model(self, config):
         self.model = get_model(self.config, self.tok)
         
-        self.model.cuda(self.config.local_rank)
-        print("Memory consumed after moving model to GPU", round(torch.cuda.memory_allocated(self.config.local_rank)/(1024**3), 2), "GB on rank", self.config.local_rank)
-        
         if self.config.local_rank == 0:
-            print("Optimizing", [n for n, p in self.model.named_parameters() if p.requires_grad])
+            # print("Optimizing", [n for n, p in self.model.named_parameters() if p.requires_grad])
             num_params_to_optimize = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             num_model_params = sum(p.numel() for p in self.model.parameters())
             print("Number of model parameters:", num_model_params)
             print("Total number of params to be optimized are: ", num_params_to_optimize)
-
             print("Percentage of parameters to be optimized: ", 100*num_params_to_optimize/num_model_params)
+
+        if config.adapter_type == "bn":
+            adap_config = BnConfig(mh_adapter=True, output_adapter=True, reduction_factor=4, non_linearity="gelu")#, leave_out=[0])
+            adapters.init(self.model)
+            self.model.add_adapter("bn_adapter", config=adap_config)
+            self.model.train_adapter("bn_adapter")
+        elif config.adapter_type == "lora":
+            adap_config = LoRAConfig(selfattn_lora=True, intermediate_lora=True)
+            adapters.init(self.model)
+            self.model.add_adapter("lora_adapter", config=adap_config)  
+            self.model.train_adapter("lora_adapter")
+            
+        for name, param in self.model.named_parameters():
+            temp = name.split(".") 
+            if config.unfreeze_embeddings and "embed" in name:
+                param.requires_grad = True
+            if temp[1]=="encoder" and "adapter" not in name:
+                if "layers" in temp and int(temp[3]) in config.unfreeze_params["encoder"]:
+                    param.requires_grad = True
+                if "layer_norm" in name:
+                    param.requires_grad = True
+            if temp[1]=="decoder" and "adapter" not in name:
+                if "layers" in temp and int(temp[3]) in config.unfreeze_params["decoder"]:
+                    param.requires_grad = True
+                if "layer_norm" in name:
+                    param.requires_grad = True
+                
+        if self.config.local_rank == 0:
+            for n, p in self.model.named_parameters():
+                if p.requires_grad:
+                    print(n)
+            num_params_to_optimize = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            num_model_params = sum(p.numel() for p in self.model.parameters())
+            self.total_params = num_model_params
+            self.total_trainable_params = num_params_to_optimize
+            print("Number of model parameters after adapter:", num_model_params)
+            print("Total number of params to be optimized are after adapter: ", num_params_to_optimize)
+            print("Percentage of parameters to be optimized after adapter: ", 100*num_params_to_optimize/num_model_params)
+        
+        self.model.cuda(self.config.local_rank)
+        print("Memory consumed after moving model to GPU", round(torch.cuda.memory_allocated(self.config.local_rank)/(1024**3), 2), "GB on rank", self.config.local_rank)
         
         # freeze_params(model, args.freeze_exception_list, rank) # May be freeze params of needed?    
         ### NOTE: Please freeze params before wrapping the model in DDP.
@@ -160,8 +210,7 @@ class Trainer:
         return sbleus, individual_sbleu_history
 
     def train(self, config):
-        
-        wandb_run_id = None
+        # wandb_run_id = None
         step = 0
         epoch = 0
         if config.finetuned_model_path is not None and os.path.exists(config.finetuned_model_path+".checkpoint_dict"):
@@ -175,22 +224,22 @@ class Trainer:
             self.scheduler.load_state_dict(checkpoint_dict['scheduler']) 
             print("Reloading step. This means we resume training.")
             step = checkpoint_dict['step'] + 1
-            wandb_run_id = checkpoint_dict['wandb_run_id']
+            # wandb_run_id = checkpoint_dict['wandb_run_id']
             epoch = checkpoint_dict['epoch'] 
         
-        if config.local_rank == 0:
-            if wandb_run_id is not None:
-                wandb.init(
-                    project=config.wb_project,
-                    id=wandb_run_id,
-                    config=config.__dict__
-                )
-            else:
-                wandb.init(
-                    project=config.wb_project,
-                    name = config.wb_run,
-                    config=config.__dict__
-                )
+        # if config.local_rank == 0:
+        #     if wandb_run_id is not None:
+        #         wandb.init(
+        #             project=config.wb_project,
+        #             id=wandb_run_id,
+        #             config=config.__dict__
+        #         )
+        #     else:
+        #         wandb.init(
+        #             project=config.wb_project,
+        #             name = config.wb_run,
+        #             config=config.__dict__
+        #         )
         
         barrier()
         
@@ -226,7 +275,7 @@ class Trainer:
                         'scheduler': self.scheduler.state_dict(), 
                         'step': step,
                         'epoch': epoch,
-                        "wandb_run_id": wandb.run.id
+                        # "wandb_run_id": wandb.run.id
                         }
                     
                     sbleus, individual_sbleu_history = self.run_evaluation(config)
@@ -333,7 +382,7 @@ class Trainer:
             'scheduler': self.scheduler.state_dict(), 
             'step': step,
             'epoch': epoch,
-            "wandb_run_id": wandb.run.id
+            # "wandb_run_id": wandb.run.id
             }
         torch.save(self.model.module.state_dict(), CHECKPOINT_PATH+".final") 
         torch.save(checkpoint_dict, CHECKPOINT_PATH+".checkpoint_dict.final")
@@ -364,6 +413,7 @@ if __name__=="__main__":
         wandb.login()    
     
     trainer = Trainer(config, train_files, dev_files)
+                
     trainer.train(config)
     # print(config.__dict__)
     
