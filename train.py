@@ -62,6 +62,10 @@ class Trainer:
     def get_model(self, config):
         self.model = get_model(self.config, self.tok)
         
+        # resizing model so that 2 extra tokens are accomodated
+        self.tok.add_tokens(["<2si>", "<2ne>"])
+        self.model.resize_token_embeddings(len(self.tok)+2)
+        
         if self.config.local_rank == 0:
             # print("Optimizing", [n for n, p in self.model.named_parameters() if p.requires_grad])
             num_params_to_optimize = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -83,23 +87,29 @@ class Trainer:
             
         for name, param in self.model.named_parameters():
             temp = name.split(".") 
-            if config.unfreeze_embeddings and "embed" in name:
+            if "embed" in name:
+                param.requires_grad = True
+            if "shared" in name:
                 param.requires_grad = True
             if temp[1]=="encoder" and "adapter" not in name:
-                if "layers" in temp and int(temp[3]) in config.unfreeze_params["encoder"]:
-                    param.requires_grad = True
-                if "layer_norm" in name:
-                    param.requires_grad = True
+                if "layers" in temp:
+                    if int(temp[3]) in config.unfreeze_params["encoder"]:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
             if temp[1]=="decoder" and "adapter" not in name:
-                if "layers" in temp and int(temp[3]) in config.unfreeze_params["decoder"]:
-                    param.requires_grad = True
-                if "layer_norm" in name:
-                    param.requires_grad = True
-                
+                if "layers" in temp :
+                    if int(temp[3]) in config.unfreeze_params["decoder"]:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
+        
+        
         if self.config.local_rank == 0:
             for n, p in self.model.named_parameters():
                 if p.requires_grad:
                     print(n)
+                    
             num_params_to_optimize = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             num_model_params = sum(p.numel() for p in self.model.parameters())
             self.total_params = num_model_params
@@ -210,6 +220,7 @@ class Trainer:
         return sbleus, individual_sbleu_history
 
     def train(self, config):
+        return
         # wandb_run_id = None
         step = 0
         epoch = 0
