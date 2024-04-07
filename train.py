@@ -220,7 +220,6 @@ class Trainer:
         return sbleus, individual_sbleu_history
 
     def train(self, config):
-        return
         # wandb_run_id = None
         step = 0
         epoch = 0
