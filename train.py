@@ -1,6 +1,6 @@
 '''
 torchrun --nproc_per_node=2 --nnodes=1 --master_port 29600 train.py
-python3 -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --master_port 29600 train.py
+python3 -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --master_port 29602 train.py
 '''
 
 from config import get_default_config
@@ -31,11 +31,12 @@ from torch.distributed import init_process_group, destroy_process_group, barrier
 
 
 class Trainer:
-    def __init__(self, config, train_files, dev_files):
+    def __init__(self, config, train_files, dev_files, unseen_dev_files):
         self.tok = get_tokenizer(config)
         self.config = config
         self.train_files = train_files
         self.dev_files = dev_files
+        self.unseen_dev_files = unseen_dev_files
         
         torch.cuda.set_device(config.local_rank)
         
@@ -157,13 +158,12 @@ class Trainer:
             
         if config.local_rank == 0:
             print("Initial LR is:", self.scheduler.get_lr()[0], ", max LR is:", config.lr, ", warmup steps are:", config.warmup_steps, ", total number of batches/steps are:", config.num_batches)
-   
-    def run_evaluation(self, config):
-        self.model.eval()
-        individual_sbleu_history = [[dev_pair, 0] for dev_pair, _ in self.dev_files]
+            
+    def get_sblues(self, config, dev_files, dataset_name):
+        print(f"------------{dataset_name}-------------")
+        individual_sbleu_history = [[dev_pair, 0] for dev_pair, _ in dev_files]
         sbleus = []
-        print("Evaluating on dev set")
-        for dev_idx, [dev_pair, dev_pair_info] in enumerate(self.dev_files):
+        for dev_idx, [dev_pair, dev_pair_info] in enumerate(dev_files):
             print("Evaluating on", dev_pair)
             slangtlang =dev_pair.strip().split("-")
             slang=slangtlang[0]
@@ -176,8 +176,8 @@ class Trainer:
                 shuffle=False,
                 collate_fn=lambda b: custom_collate(b, config, self.tok)
             )
-            predictions = [[] for dev_pair, dev_pair_info in self.dev_files]
-            target_sentences = [[] for dev_pair, dev_pair_info in self.dev_files]
+            predictions = [[] for dev_pair, dev_pair_info in dev_files]
+            target_sentences = [[] for dev_pair, dev_pair_info in dev_files]
             for dev_input_ids, dev_input_masks, _, __, tgt_sentences in val_dataloader:
                 dev_input_ids = dev_input_ids.to(self.device) 
                 dev_input_masks = dev_input_masks.to(self.device) 
@@ -217,7 +217,72 @@ class Trainer:
             
         sbleus = sum(sbleus)/len(sbleus)
         
-        return sbleus, individual_sbleu_history
+        return sbleu, individual_sbleu_history
+   
+    def run_evaluation(self, config):
+        self.model.eval()
+        # individual_sbleu_history = [[dev_pair, 0] for dev_pair, _ in self.dev_files]
+        # unseen_individual_sbleu_history = [[dev_pair, 0] for dev_pair, _ in self.unseen_dev_files]
+        # sbleus = []
+        print("Evaluating on dev set")
+        sbleus, individual_sbleu_history = self.get_sblues(config, self.dev_files, "PMI Seen")
+        sbleus_flores, individual_sbleu_history_flores = self.get_sblues(config, self.unseen_dev_files, "PMI Unseen")
+        
+        # for dev_idx, [dev_pair, dev_pair_info] in enumerate(self.dev_files):
+        #     print("Evaluating on", dev_pair)
+        #     slangtlang =dev_pair.strip().split("-")
+        #     slang=slangtlang[0]
+        #     tlang=slangtlang[1]
+            
+        #     dataset = MultilingualDataset(dev_pair_info, config, dataset_type="dev", lang_pair=dev_pair)
+        #     val_dataloader = DataLoader(
+        #         dataset, 
+        #         batch_size=config.dev_batch_size, 
+        #         shuffle=False,
+        #         collate_fn=lambda b: custom_collate(b, config, self.tok)
+        #     )
+        #     predictions = [[] for dev_pair, dev_pair_info in self.dev_files]
+        #     target_sentences = [[] for dev_pair, dev_pair_info in self.dev_files]
+        #     for dev_input_ids, dev_input_masks, _, __, tgt_sentences in val_dataloader:
+        #         dev_input_ids = dev_input_ids.to(self.device) 
+        #         dev_input_masks = dev_input_masks.to(self.device) 
+                
+        #         with torch.no_grad():
+        #             translations = self.model.module.generate(
+        #                 dev_input_ids, 
+        #                 use_cache=True, 
+        #                 num_beams=1, 
+        #                 max_length=int(len(dev_input_ids[0])*2), 
+        #                 min_length=int(len(dev_input_ids[0])*0.1), 
+        #                 early_stopping=True, 
+        #                 attention_mask=dev_input_masks, 
+        #                 pad_token_id=self.tok.pad_token_id, 
+        #                 eos_token_id=self.tok(["</s>"], add_special_tokens=False).input_ids[0][0], 
+        #                 decoder_start_token_id=self.tok(["<2"+tlang+">"], add_special_tokens=False).input_ids[0][0], 
+        #                 bos_token_id=self.tok(["<s>"], add_special_tokens=False).input_ids[0][0]
+        #             )
+        #         del dev_input_ids 
+        #         del dev_input_masks 
+        #         translations = translations.to('cpu')
+                
+        #         for translation in translations:
+        #             translation  = self.tok.decode(translation, skip_special_tokens=True, clean_up_tokenization_spaces=False) ### Get the raw sentences.
+        #             predictions[dev_idx].append(translation)
+        #         target_sentences[dev_idx].extend(tgt_sentences)
+            
+        #     # for i in range(20):
+        #     #     print("translation", predictions[dev_idx][i], "---- target", target_sentences[dev_idx][i])
+        #     # print(len(target_sentences[dev_idx])==len(predictions[dev_idx]))
+        #     del translations
+            
+        #     sbleu = get_sacrebleu(target_sentences[dev_idx], predictions[dev_idx])
+        #     individual_sbleu_history[dev_idx][1] = sbleu
+        #     sbleus.append(sbleu)
+        #     print("Evaluation on", dev_pair, "done.", sbleu)
+            
+        # sbleus = sum(sbleus)/len(sbleus)
+        
+        return sbleus, individual_sbleu_history, sbleus_flores, individual_sbleu_history_flores
 
     def train(self, config):
         # wandb_run_id = None
@@ -288,7 +353,7 @@ class Trainer:
                         # "wandb_run_id": wandb.run.id
                         }
                     
-                    sbleus, individual_sbleu_history = self.run_evaluation(config)
+                    sbleus, individual_sbleu_history, sbleus_flores, individual_sbleu_history_flores = self.run_evaluation(config)
                     save_model = False
                     
                     for lang_idx, (lang_pair, sbleu) in enumerate(individual_sbleu_history):
@@ -312,6 +377,13 @@ class Trainer:
                     if sbleu > max_global_sbleu: 
                         max_global_sbleu = sbleu
                         # max_global_sbleu_step = curr_eval_step
+                        
+                    for lang_idx, (lang_pair, sbleu) in enumerate(individual_sbleu_history_flores):
+                        print("BLEU score using ScareBLEU after", step, "iterations is", round(sbleu, 2), "for language pair", lang_pair, "in Flores")
+                    wandb.log({f"{lang_pair}_sbleu_flores": sbleu for lang_pair, sbleu in individual_sbleu_history_flores} )
+                    print(f"Overall BLEU score for flores: {sbleus_flores}")
+                    wandb.log({"sbleu_flores": sbleus_flores}, step=step)
+                        # wandb.log({f"{lang_pair}_sbleu": sbleu}, step=step)
                     
                     # TODO: we can do early stopping here
                     
@@ -414,6 +486,11 @@ if __name__=="__main__":
     
     dev_files = [(slang+"-"+tlang, (dev_src, dev_tgt)) 
                    for slang, tlang, dev_src, dev_tgt in zip(config.dev_src_languages, config.dev_tgt_languages, config.dev_src_files, config.dev_tgt_files)]
+        
+    unseen_dev_files = []
+    if config.no_languages == 10:    
+        unseen_dev_files = [(slang+"-"+tlang, (dev_src, dev_tgt)) 
+                   for slang, tlang, dev_src, dev_tgt in zip(config.dev_src_languages, config.dev_tgt_languages, config.unseen_dev_src_files, config.unseen_dev_tgt_files)]
     
     if config.local_rank == 0:
         print("Training Files are: ", train_files)
@@ -422,7 +499,7 @@ if __name__=="__main__":
     if config.local_rank == 0:
         wandb.login()    
     
-    trainer = Trainer(config, train_files, dev_files)
+    trainer = Trainer(config, train_files, dev_files, unseen_dev_files)
                 
     trainer.train(config)
     # print(config.__dict__)

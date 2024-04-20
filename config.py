@@ -24,6 +24,10 @@ class Config:
     tokenizer_name_or_path: str
     wb_project: str
     wb_run: str
+    
+    unseen_dev_src_files : list
+    unseen_dev_tgt_files : list
+    no_languages : int
     dropout: float = 0.1
     attention_dropout: float = 0.1
     activation_dropout: float = 0.1
@@ -32,28 +36,30 @@ class Config:
     lr: float = 0.001
     num_batches: int = 500000
     warmup_steps: int = 16000
-    max_src_length: int = 256
-    max_tgt_length: int = 256
-    hard_truncate_length: int = 1024
+    max_src_length: int = 200
+    max_tgt_length: int = 200
+    hard_truncate_length: int = 800
     batch_size: int = 16
     label_smoothing: float = 0.1
     eval_every: int = 1000
     model_path: str = "model.ft"
-    dev_batch_size: int = 128
-    num_epochs: int = 30
+    dev_batch_size: int = 32
+    num_epochs: int = 100
     finetuned_model_path: str = None
-    adapter_type = "lora"
-    unfreeze_params = {"encoder":[0,1,2,3,4,5], "decoder":[0,1,2,3,4,5]}
-    unfreeze_embeddings = True
+    adapter_type = "bn"
+    unfreeze_params = {"encoder":[], "decoder":[0,1,2,3,4,5]}
+    unfreeze_embeddings =False
     
     
     
 def get_default_config():
     setting = "M2O"
     
-    # languages = ["bn", "gu", "hi", "kn", "ml", "mr", "or", "pa", "ta", "te"]
-    languages = ['si', 'ne']
-    dataset_path = "Dataset_Unseen"
+    languages = ["bn", "gu", "hi", "kn", "ml", "mr", "or", "pa", "ta", "te"]
+    # languages = ['si', 'ne']
+    dataset_path = "dataset"
+    unseen_dataset_path = "Dataset_Unseen"
+    no_languages = 10
     
     if setting == "M2O":
         train_src_languages = languages
@@ -64,6 +70,9 @@ def get_default_config():
         train_tgt_files = [os.path.join(dataset_path, f"train_data/en-{lang}/train.en") for lang in languages]
         dev_src_files = [os.path.join(dataset_path, f"dev_data/dev.{lang}") for lang in languages]
         dev_tgt_files = [os.path.join(dataset_path, f"dev_data/dev.en") for lang in languages]
+        if len(languages) == 10:
+            unseen_dev_src_files = [os.path.join(unseen_dataset_path, f"dev_data/dev.{lang}") for lang in languages]
+            unseen_dev_tgt_files = [os.path.join(unseen_dataset_path, f"dev_data/dev.en") for lang in languages]
     elif setting == "O2M":
         train_src_languages = ["en"]*len(languages)
         train_tgt_languages = languages
@@ -73,6 +82,9 @@ def get_default_config():
         train_src_files = [os.path.join(dataset_path, f"train_data/en-{lang}/train.en") for lang in languages]
         dev_tgt_files = [os.path.join(dataset_path, f"dev_data/dev.{lang}") for lang in languages]
         dev_src_files = [os.path.join(dataset_path, f"dev_data/dev.en") for lang in languages]
+        if len(languages) == 10:
+            unseen_dev_src_files = [os.path.join(unseen_dataset_path, f"dev_data/dev.{lang}") for lang in languages]
+            unseen_dev_tgt_files = [os.path.join(unseen_dataset_path, f"dev_data/dev.en") for lang in languages]
     
     config = Config(
         train_src_languages = train_src_languages,
@@ -83,6 +95,10 @@ def get_default_config():
         train_tgt_files = train_tgt_files,
         dev_src_files = dev_src_files,
         dev_tgt_files = dev_tgt_files,
+        unseen_dev_src_files = unseen_dev_src_files,
+        unseen_dev_tgt_files = unseen_dev_tgt_files,
+        no_languages = no_languages,
+
         
         encoder_layers = 6,
         decoder_layers = 6,
@@ -94,11 +110,11 @@ def get_default_config():
         pretrained_model="indicbart_model.ckpt",
         tokenizer_name_or_path="albert-indicunified64k",
         wb_project="indic-bart-adapter",
-        wb_run="Sn-Ne-Case-1",
+        wb_run="bn-adapter-10-lang-case-1",
         warmup_steps=16000,
         dropout=0.1,
         batch_size=16,
-        model_path="model.ft",
+        model_path="bn-adapter-case1-model-all-lang.ft",
         eval_every=1000,
         finetuned_model_path=None
     )
